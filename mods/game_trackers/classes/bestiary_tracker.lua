@@ -47,6 +47,9 @@ local function scheduleRender(generation, callback)
 		if generation ~= renderGeneration or not bestiaryTrackerWindow or bestiaryTrackerWindow:isDestroyed() then
 			return
 		end
+		if not bestiaryTrackerWindow:isVisible() or not bestiaryTrackerWindow.contentsPanel:isVisible() then
+			return
+		end
 		callback()
 	end, 1)
 end
@@ -69,6 +72,19 @@ function BestiaryTracker.updateWidgetTracker(data, widget)
 	local secondUnlock = data[4]
 	local thirdUnlock = data[5]
 
+	-- A reused row can move backwards after a reset or threshold change.
+	widget.trackerContainer1.killsBar1:setPercent(0)
+	widget.trackerContainer2.killsBar2:setPercent(0)
+	local completed = currentKills >= thirdUnlock
+	if widget.trackerCompleted ~= completed then
+		local image = completed and '/game_cyclopedia/images/ui/monster-bar-green' or
+		    '/game_cyclopedia/images/ui/mosnter-bar'
+		widget.trackerContainer.killsBar:setImageSource(image)
+		widget.trackerContainer1.killsBar1:setImageSource(image)
+		widget.trackerContainer2.killsBar2:setImageSource(image)
+		widget.trackerCompleted = completed
+	end
+
 	widget.trackerContainer.killsBar:setTooltip(tr("%s / %s", comma_value(currentKills), comma_value(firstUnlock)))
 	widget.trackerContainer1.killsBar1:setTooltip(tr("%s / %s", comma_value(currentKills), comma_value(secondUnlock)))
 	widget.trackerContainer2.killsBar2:setTooltip(tr("%s / %s", comma_value(currentKills), comma_value(thirdUnlock)))
@@ -87,9 +103,6 @@ function BestiaryTracker.updateWidgetTracker(data, widget)
 	end
 
 	if currentKills >= thirdUnlock then
-		widget.trackerContainer.killsBar:setImageSource('/game_cyclopedia/images/ui/monster-bar-green')
-		widget.trackerContainer1.killsBar1:setImageSource('/game_cyclopedia/images/ui/monster-bar-green')
-		widget.trackerContainer2.killsBar2:setImageSource('/game_cyclopedia/images/ui/monster-bar-green')
 		widget.trackerContainer.killsBar:setTooltip(widget.trackerContainer.killsBar:getTooltip() .. " (fully unlocked)")
 		widget.trackerContainer1.killsBar1:setTooltip(widget.trackerContainer1.killsBar1:getTooltip() .. " (fully unlocked)")
 		widget.trackerContainer2.killsBar2:setTooltip(widget.trackerContainer2.killsBar2:getTooltip() .. " (fully unlocked)")
@@ -118,38 +131,7 @@ function BestiaryTracker.updateWidgetShowTracker(data, monsterList)
 		widget.bossName:setTooltip(bossName)
 	end
 
-	local currentKills = data[2]
-	local firstUnlock = data[3]
-	local secondUnlock = data[4]
-	local thirdUnlock = data[5]
-
-	widget.trackerContainer.killsBar:setTooltip(tr("%s / %s", comma_value(currentKills), comma_value(firstUnlock)))
-	widget.trackerContainer1.killsBar1:setTooltip(tr("%s / %s", comma_value(currentKills), comma_value(secondUnlock)))
-	widget.trackerContainer2.killsBar2:setTooltip(tr("%s / %s", comma_value(currentKills), comma_value(thirdUnlock)))
-
-	local firstPercent = math.min((currentKills * 100) / firstUnlock, 100)
-	widget.trackerContainer.killsBar:setPercent(firstPercent)
-
-	if currentKills > firstUnlock then
-		local secondPercent = math.min(((currentKills - firstUnlock) * 100) / (secondUnlock - firstUnlock), 100)
-		widget.trackerContainer1.killsBar1:setPercent(secondPercent)
-	end
-
-	if currentKills > secondUnlock then
-		local thirdPercent = math.min(((currentKills - secondUnlock) * 100) / (thirdUnlock - secondUnlock), 100)
-		widget.trackerContainer2.killsBar2:setPercent(thirdPercent)
-	end
-
-	if currentKills >= thirdUnlock then
-		widget.trackerContainer.killsBar:setImageSource('/game_cyclopedia/images/ui/monster-bar-green')
-		widget.trackerContainer1.killsBar1:setImageSource('/game_cyclopedia/images/ui/monster-bar-green')
-		widget.trackerContainer2.killsBar2:setImageSource('/game_cyclopedia/images/ui/monster-bar-green')
-		widget.trackerContainer.killsBar:setTooltip(widget.trackerContainer.killsBar:getTooltip() .. " (fully unlocked)")
-		widget.trackerContainer1.killsBar1:setTooltip(widget.trackerContainer1.killsBar1:getTooltip() .. " (fully unlocked)")
-		widget.trackerContainer2.killsBar2:setTooltip(widget.trackerContainer2.killsBar2:getTooltip() .. " (fully unlocked)")
-	end
-
-	widget.trackerContainer1.countLabel:setText(comma_value(currentKills))
+	BestiaryTracker.updateWidgetTracker(data, widget)
 
 	widget.onMouseRelease = function(widget, mousePos, mouseButton)
 		if widget:containsPoint(mousePos) and mouseButton == MouseRightButton then
@@ -218,9 +200,10 @@ function BestiaryTracker.showTrackerData(update)
 	BestiaryTracker.cancelRender()
 
 	-- The server resends the whole tracker list every time a tracked creature is killed, so
-	-- this runs per kill. Everything below only produces widgets, so with the window closed it
-	-- is pure waste; toggleBestiaryTracker() re-renders from BestiaryTrackerList on open.
-	if not bestiaryTrackerWindow or not bestiaryTrackerWindow:isVisible() then
+	-- this runs per kill. Hidden/minimized contents keep the cached list; visibility
+	-- callbacks and moveTracker() render it when the contents become visible again.
+	if not bestiaryTrackerWindow or not bestiaryTrackerWindow:isVisible() or
+	   not bestiaryTrackerWindow.contentsPanel:isVisible() then
 		return
 	end
 
@@ -265,18 +248,14 @@ function BestiaryTracker.showTrackerData(update)
 		end
 	end)
 
-	local reuseWidgets = #BestiaryTrackerList == bestiaryTrackerWindow.contentsPanel:getChildCount()
-	if reuseWidgets then
-		for _, data in ipairs(BestiaryTrackerList) do
-			if not bestiaryTrackerWindow.contentsPanel:getChildById(data[1]) then
-				reuseWidgets = false
-				break
-			end
-		end
+	local trackedIds = {}
+	for _, data in ipairs(BestiaryTrackerList) do
+		trackedIds[tostring(data[1])] = true
 	end
-
-	if not reuseWidgets then
-		bestiaryTrackerWindow.contentsPanel:destroyChildren()
+	for _, widget in ipairs(bestiaryTrackerWindow.contentsPanel:getChildren()) do
+		if not trackedIds[widget:getId()] then
+			widget:destroy()
+		end
 	end
 
 	local generation = renderGeneration
@@ -291,11 +270,8 @@ function BestiaryTracker.showTrackerData(update)
 			return
 		end
 
-		if reuseWidgets then
-			local widget = bestiaryTrackerWindow.contentsPanel:getChildById(data[1])
-			if not widget then
-				return
-			end
+		local widget = bestiaryTrackerWindow.contentsPanel:getChildById(data[1])
+		if widget then
 			bestiaryTrackerWindow.contentsPanel:moveChildToIndex(widget, nextIndex)
 			BestiaryTracker.updateWidgetTracker(data, widget)
 		else
